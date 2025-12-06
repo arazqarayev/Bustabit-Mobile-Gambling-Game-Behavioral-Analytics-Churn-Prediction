@@ -28,6 +28,7 @@ print(df.head())
 print("\nVeri tipi bilgisi:")
 print(df.info())
 
+##Id	GameID	Username	Bet	CashedOut	Bonus	Profit	BustedAt	PlayDate
 ###############################################
 # 2. VERİ TEMİZLEME
 # - Önemli kolonlardaki (CashedOut, Bonus, Profit) eksik değerleri temizliyoruz
