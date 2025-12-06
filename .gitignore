@@ -1,207 +1,324 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
+###############################################
+# Bustabit Kullanıcı Davranış Analizi Projesi
+# Yapan: Araz
+# Amaç:
+# - RFM Analizi
+# - Segmentasyon (Power User / Churn Risk)
+# - Aktivite Pattern Analizi
+# - Funnel Analizi
+# - Churn Prediction (Makine Öğrenmesi)
+###############################################
 
-# C extensions
-*.so
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+###############################################
+# 1. VERİYİ OKUMA VE İLK KEZ İNCELEME
+###############################################
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# CSV dosyasını oku (gerekirse path'i değiştir)
+df = pd.read_csv("bustabit.csv")
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+print("İlk 5 satır:")
+print(df.head())
+print("\nVeri tipi bilgisi:")
+print(df.info())
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
+###############################################
+# 2. VERİ TEMİZLEME
+# - Önemli kolonlardaki (CashedOut, Bonus, Profit) eksik değerleri temizliyoruz
+###############################################
 
-# Translations
-*.mo
-*.pot
+print("\nSütun bazında eksik (NaN) sayıları:")
+print(df.isna().sum())
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# Eksik değerleri kritik kolonlardan temizle
+df = df.dropna(subset=["CashedOut", "Bonus", "Profit"])
 
-# Flask stuff:
-instance/
-.webassets-cache
+print("\nTemizlik sonrası eksik (NaN) sayıları:")
+print(df.isna().sum())
 
-# Scrapy stuff:
-.scrapy
+###############################################
+# 3. ZAMAN KOLONUNU DÜZENLEME
+# - PlayDate'i datetime formatına çeviriyoruz
+# - Saat, gün, hafta günü, ay gibi ek kolonlar üretiyoruz
+###############################################
 
-# Sphinx documentation
-docs/_build/
+df["PlayDate"] = pd.to_datetime(df["PlayDate"])
 
-# PyBuilder
-.pybuilder/
-target/
+df["Hour"] = df["PlayDate"].dt.hour
+df["Day"] = df["PlayDate"].dt.day
+df["Weekday"] = df["PlayDate"].dt.day_name()
+df["Month"] = df["PlayDate"].dt.month
 
-# Jupyter Notebook
-.ipynb_checkpoints
+###############################################
+# 4. RFM ANALİZİ
+# RFM:
+# - Recency: Kullanıcı en son kaç gün önce oynadı
+# - Frequency: Kaç kez oyun oynadı (işlem sayısı)
+# - Monetary: Toplam bahis miktarı (Bet toplamı)
+###############################################
 
-# IPython
-profile_default/
-ipython_config.py
+latest_date = df["PlayDate"].max()
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+rfm = df.groupby("Username").agg({
+    "PlayDate": lambda x: (latest_date - x.max()).days,  # Recency
+    "Username": "count",                                # Frequency
+    "Bet": "sum"                                        # Monetary
+})
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+rfm.columns = ["Recency", "Frequency", "Monetary"]
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+print("\nRFM tablosunun ilk satırları:")
+print(rfm.head())
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
+###############################################
+# 5. RFM SKORLAMA (1–5)
+# - Rank kullanarak qcut uyguluyoruz (duplicate bin hatasını önlemek için)
+###############################################
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
+# Rank'ler
+rfm["R_rank"] = rfm["Recency"].rank(method="first", ascending=True)
+rfm["F_rank"] = rfm["Frequency"].rank(method="first", ascending=True)
+rfm["M_rank"] = rfm["Monetary"].rank(method="first", ascending=True)
 
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
+# Recency: küçük gün sayısı = daha iyi, o yüzden ters label
+rfm["R_Score"] = pd.qcut(rfm["R_rank"], 5, labels=[5, 4, 3, 2, 1])
+# Frequency & Monetary: yüksek değer = daha iyi
+rfm["F_Score"] = pd.qcut(rfm["F_rank"], 5, labels=[1, 2, 3, 4, 5])
+rfm["M_Score"] = pd.qcut(rfm["M_rank"], 5, labels=[1, 2, 3, 4, 5])
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+# Skorları integer'a çevir
+rfm["R_Score"] = rfm["R_Score"].astype(int)
+rfm["F_Score"] = rfm["F_Score"].astype(int)
+rfm["M_Score"] = rfm["M_Score"].astype(int)
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+# Tek bir RFM skoru üret (ör: 545, 322 vb.)
+rfm["RFM_Score"] = (
+    rfm["R_Score"].astype(str)
+    + rfm["F_Score"].astype(str)
+    + rfm["M_Score"].astype(str)
+)
 
-# SageMath parsed files
-*.sage.py
+print("\nRFM skor örnekleri:")
+print(rfm.head())
 
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+###############################################
+# 6. RFM SEGMENTASYON
+# - Power User
+# - Churn Risk
+# - Normal User
+###############################################
 
-# Spyder project settings
-.spyderproject
-.spyproject
+def rfm_segment(row):
+    if row["R_Score"] >= 4 and row["F_Score"] >= 4:
+        return "Power User"
+    elif row["R_Score"] <= 2 and row["F_Score"] <= 2:
+        return "Churn Risk"
+    else:
+        return "Normal User"
 
-# Rope project settings
-.ropeproject
+rfm["Segment"] = rfm.apply(rfm_segment, axis=1)
 
-# mkdocs documentation
-/site
+print("\nSegment dağılımı:")
+print(rfm["Segment"].value_counts())
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+###############################################
+# 7. SEGMENT DAĞILIM GRAFİĞİ (Opsiyonel)
+###############################################
 
-# Pyre type checker
-.pyre/
+plt.figure(figsize=(6, 4))
+rfm["Segment"].value_counts().plot(kind="bar")
+plt.title("RFM Segment Dağılımı")
+plt.xlabel("Segment")
+plt.ylabel("Kullanıcı Sayısı")
+plt.tight_layout()
+plt.show()
 
-# pytype static type analyzer
-.pytype/
+###############################################
+# 8. AKTİVİTE PATTERN ANALİZİ
+# - Günün saatlerine göre aktivite
+# - Haftanın günlerine göre aktivite
+# - Zaman içinde günlük trend
+###############################################
 
-# Cython debug symbols
-cython_debug/
+# Saatlik aktivite
+hourly_activity = df.groupby("Hour").size()
+print("\nSaatlik aktivite:")
+print(hourly_activity)
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+plt.figure(figsize=(8, 4))
+hourly_activity.plot(kind="bar")
+plt.title("Saatlik Aktivite Dağılımı")
+plt.xlabel("Saat")
+plt.ylabel("İşlem Sayısı")
+plt.tight_layout()
+plt.show()
 
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
+# Haftanın günlerine göre aktivite
+weekday_activity = df["Weekday"].value_counts()
+print("\nHaftanın günlerine göre aktivite:")
+print(weekday_activity)
 
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+plt.figure(figsize=(8, 4))
+weekday_activity.plot(kind="bar")
+plt.title("Haftalık Aktivite Pattern'i")
+plt.xlabel("Gün")
+plt.ylabel("İşlem Sayısı")
+plt.tight_layout()
+plt.show()
 
-# Ruff stuff:
-.ruff_cache/
+# Günlük trend (zaman içinde değişim)
+daily_trend = df.groupby(df["PlayDate"].dt.date).size()
+print("\nGünlük aktivite trendi (ilk 10 gün):")
+print(daily_trend.head(10))
 
-# PyPI configuration file
-.pypirc
+plt.figure(figsize=(10, 4))
+daily_trend.plot()
+plt.title("Günlük Aktivite Trend Analizi")
+plt.xlabel("Tarih")
+plt.ylabel("İşlem Sayısı")
+plt.tight_layout()
+plt.show()
 
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
+###############################################
+# 9. POWER USER AKTİVİTE SAATLERİ
+###############################################
 
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
+# RFM segmentlerini ana dataframe'e merge et
+df = df.merge(rfm[["Segment"]], left_on="Username", right_index=True)
+
+power_users = df[df["Segment"] == "Power User"]
+power_hourly = power_users.groupby("Hour").size()
+
+print("\nPower User saatlik aktivite:")
+print(power_hourly)
+
+plt.figure(figsize=(8, 4))
+power_hourly.plot(kind="bar")
+plt.title("Power User Saatlik Davranış Pattern'i")
+plt.xlabel("Saat")
+plt.ylabel("İşlem Sayısı")
+plt.tight_layout()
+plt.show()
+
+###############################################
+# 10. FUNNEL ANALİZİ
+# Funnel aşamaları:
+#   1) Registration  -> unique Username
+#   2) First Bet     -> Bet > 0 olan kullanıcılar
+#   3) Result        -> CashedOut dolu olan kullanıcılar
+#   4) Repeat        -> 2+ işlem yapan kullanıcılar
+###############################################
+
+stage_1 = df["Username"].nunique()                      # Kayıtlı kullanıcılar
+stage_2 = df[df["Bet"] > 0]["Username"].nunique()       # En az 1 kez bahis
+stage_3 = df[df["CashedOut"].notna()]["Username"].nunique()  # Sonuç alan
+user_counts = df["Username"].value_counts()
+stage_4 = user_counts[user_counts >= 2].count()         # Tekrar gelen
+
+print("\nFunnel sayıları:")
+print("Stage 1 - Registration :", stage_1)
+print("Stage 2 - First Bet    :", stage_2)
+print("Stage 3 - Result       :", stage_3)
+print("Stage 4 - Repeat       :", stage_4)
+
+funnel_df = pd.DataFrame({
+    "Stage": ["Registration", "First Bet", "Result", "Repeat"],
+    "Users": [stage_1, stage_2, stage_3, stage_4]
+})
+
+# Bir sonraki adıma göre yüzde kayıp (drop-off)
+funnel_df["Drop_Off_%"] = funnel_df["Users"].pct_change(-1) * 100
+
+print("\nFunnel tablosu:")
+print(funnel_df)
+
+plt.figure(figsize=(6, 4))
+funnel_df.set_index("Stage")["Users"].plot(kind="bar")
+plt.title("Kullanıcı Funnel Analizi")
+plt.ylabel("Kullanıcı Sayısı")
+plt.tight_layout()
+plt.show()
+
+###############################################
+# 11. CHURN LABEL OLUŞTURMA
+# Churn tanımı:
+# - Son 14 gündür oynamayan kullanıcı = 1 (Churn)
+# - Son 14 gün içinde oynayan = 0 (Aktif)
+###############################################
+
+last_play = df.groupby("Username")["PlayDate"].max()
+latest_date = df["PlayDate"].max()
+days_since_last = (latest_date - last_play).dt.days
+
+# RFM tablosuna ekle
+rfm["Days_Since_Last"] = days_since_last
+rfm["Churn"] = (rfm["Days_Since_Last"] > 14).astype(int)
+
+print("\nChurn label dağılımı (0 = aktif, 1 = churn):")
+print(rfm["Churn"].value_counts())
+
+###############################################
+# 12. CHURN PREDICTION MODELİ
+# Basit Logistic Regression modeli
+# Feature'lar:
+#   - Recency
+#   - Frequency
+#   - Monetary
+# ÖNEMLİ: Days_Since_Last sadece label üretmekte kullanıldı,
+#         input feature olarak kullanılmıyor (data leakage'i engellemek için)
+###############################################
+
+X = rfm[["Recency", "Frequency", "Monetary"]]
+y = rfm["Churn"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=42
+)
+
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train, y_train)
+
+preds = model.predict(X_test)
+
+print("\nLogistic Regression Churn Prediction Sonuçları:")
+print(classification_report(y_test, preds))
+
+###############################################
+# 13. FEATURE IMPORTANCE (Model hangi değişkene bakıyor?)
+###############################################
+
+importance = pd.Series(
+    model.coef_[0],
+    index=X.columns
+).sort_values(ascending=False)
+
+print("\nFeature importance (büyüklük sırasına göre):")
+print(importance)
+
+plt.figure(figsize=(6, 4))
+importance.plot(kind="bar")
+plt.title("Churn Model Feature Importance")
+plt.ylabel("Katsayı (Önem)")
+plt.tight_layout()
+plt.show()
+
+###############################################
+# 14. YÜKSEK CHURN RİSKLİ KULLANICILAR
+###############################################
+
+rfm["Churn_Probability"] = model.predict_proba(X)[:, 1]
+
+high_risk_users = rfm.sort_values(
+    by="Churn_Probability",
+    ascending=False
+).head(20)
+
+print("\nEn yüksek churn riskine sahip ilk 20 kullanıcı:")
+print(high_risk_users[["Recency", "Frequency", "Monetary",
+                       "Days_Since_Last", "Churn_Probability", "Segment"]])
